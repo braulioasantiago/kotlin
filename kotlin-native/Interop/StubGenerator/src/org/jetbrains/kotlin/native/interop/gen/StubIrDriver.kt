@@ -150,15 +150,16 @@ class StubIrDriver(
 
         class Metadata(val metadata: KlibModuleMetadata): Result()
     }
-
     fun run(): Result {
         val (entryPoint, moduleName, outCFile, outKtFile) = options
 
         val builderResult = StubIrBuilder(context).build()
         val bridgeBuilderResult = StubIrBridgeBuilder(context, builderResult).build()
 
-        outCFile.bufferedWriter().use {
-            emitCFile(context, it, entryPoint, bridgeBuilderResult.nativeBridges)
+        if (!context.configuration.cinteropHeaderMode) {
+            outCFile.bufferedWriter().use {
+                emitCFile(context, it, entryPoint, bridgeBuilderResult.nativeBridges)
+            }
         }
 
         if (options.dumpBridges) {

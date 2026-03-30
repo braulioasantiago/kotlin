@@ -415,19 +415,22 @@ fun Compilation.copy(
         includes: List<IncludeInfo> = this.includes,
         additionalPreambleLines: List<String> = this.additionalPreambleLines,
         compilerArgs: List<String> = this.compilerArgs,
-        language: Language = this.language
+        language: Language = this.language,
+        cinteropHeaderMode: Boolean = this.cinteropHeaderMode
 ): Compilation = CompilationImpl(
         includes = includes,
         additionalPreambleLines = additionalPreambleLines,
         compilerArgs = compilerArgs,
-        language = language
+        language = language,
+        cinteropHeaderMode = cinteropHeaderMode
 )
 
 data class CompilationImpl(
         override val includes: List<IncludeInfo>,
         override val additionalPreambleLines: List<String>,
         override val compilerArgs: List<String>,
-        override val language: Language
+        override val language: Language,
+        override val cinteropHeaderMode: Boolean = false
 ) : Compilation
 
 /**
@@ -466,7 +469,8 @@ internal fun Compilation.withPrecompiledHeader(translationUnit: CXTranslationUni
     return CompilationWithPCH(
         this.compilerArgs,
         precompiledHeader.absolutePath,
-        this.language
+        this.language,
+        this.cinteropHeaderMode
     )
 }
 

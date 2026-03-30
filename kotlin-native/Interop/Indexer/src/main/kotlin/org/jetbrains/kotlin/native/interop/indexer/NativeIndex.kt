@@ -60,6 +60,7 @@ interface Compilation {
     val additionalPreambleLines: List<String>
     val compilerArgs: List<String>
     val language: Language
+    val cinteropHeaderMode: Boolean
 }
 
 fun defaultCompilerArgs(language: Language): List<String> =
@@ -92,10 +93,11 @@ fun defaultCompilerArgs(language: Language): List<String> =
 
 data class CompilationWithPCH(
         override val compilerArgs: List<String>,
-        override val language: Language
+        override val language: Language,
+        override val cinteropHeaderMode: Boolean = false,
 ) : Compilation {
-    constructor(compilerArgs: List<String>, precompiledHeader: String, language: Language)
-            : this(compilerArgs + listOf("-include-pch", precompiledHeader), language)
+    constructor(compilerArgs: List<String>, precompiledHeader: String, language: Language, cinteropHeaderMode: Boolean = false)
+            : this(compilerArgs + listOf("-include-pch", precompiledHeader), language, cinteropHeaderMode)
 
     override val includes: List<IncludeInfo>
         get() = emptyList()
@@ -116,6 +118,7 @@ data class NativeLibrary(
         override val compilerArgs: List<String>,
         val headerToIdMapper: HeaderToIdMapper,
         override val language: Language,
+        override val cinteropHeaderMode: Boolean,
         val excludeSystemLibs: Boolean, // TODO: drop?
         val headerExclusionPolicy: HeaderExclusionPolicy,
         val headerFilter: NativeLibraryHeaderFilter,
