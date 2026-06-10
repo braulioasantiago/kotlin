@@ -1026,29 +1026,78 @@ private fun FilterHeadersOutput.filterHeadersByPredefined(
 }
 
 fun NativeLibrary.getHeaderPaths(): NativeLibraryHeaders<String> {
-    withIndex(excludeDeclarationsFromPCH = false) { index ->
-        val translationUnit =
-                this.parse(index, options = CXTranslationUnit_DetailedPreprocessingRecord).ensureNoCompileErrors()
-        try {
-            (
-                val headers, val _ = ownTranslationUnits
-            ) =
-                UnitsHolder(index).use { unitsHolder ->
-                    getHeadersAndUnits(this, index, translationUnit, unitsHolder)
-                }
+    fun findScanDeps(): String? = System.getProperty("kotlin.native.llvm.libclang")
+        ?.let { File(it).parentFile?.parentFile }
+        ?.let { File(it, "bin/clang-scan-deps") }
+        ?.takeIf { it.exists() }
+        ?.absolutePath
 
-            fun getPath(file: ClangFile?) = if (file == null) "<builtins>" else file.canonicalPath
-            return NativeLibraryHeaders(
-                    headers.ownHeaders.map(::getPath).toSet(),
-                    headers.importedHeaders.map(::getPath).toSet(),
-                    // Note: the path to the main file makes little sense (because it is a temporary file),
-                    // and ideally shouldn't be included there, within `ownHeaders`/`importedHeaders` as well.
-                    getPath(headers.mainFile)
-            )
+    fun String.runScan(): String? {
+        val tempSource = this@getHeaderPaths.createTempSource()
+        return try {
+            val command = mutableListOf(this, "-format=make", "-c", tempSource.absolutePath)
+            
+            // Add target if set in compilerArgs
+            val targetIndex = compilerArgs.indexOf("-target")
+            if (targetIndex >= 0) {
+                compilerArgs.getOrNull(targetIndex + 1)?.let { targetArg ->
+                    command.addAll(listOf("-target", targetArg))
+                }
+            }
+
+            val process = ProcessBuilder(command).start()
+            if (process.waitFor() != 0) return null
+            process.inputStream.readBytes().decodeToString()
+        } catch (e: Exception) {
+            null
         } finally {
-            clang_disposeTranslationUnit(translationUnit)
+            tempSource.delete()
         }
     }
+
+    fun String.parseDeps(): NativeLibraryHeaders<String>? = try {
+        // We replace both Unix (\n) and Windows (\r\n) line continuations
+        val depsText = this.replace("\\\n", " ").replace("\\\r\n", " ")
+            .substringAfter(":", missingDelimiterValue = "")
+            .trim()
+
+        depsText.takeIf { it.isNotEmpty() }?.let { text ->
+            val deps = text.split("\\s+".toRegex()).toSet()
+            // `clang-scan-deps` flattens all headers, so we pass everything as `ownHeaders` and leave `importedHeaders` empty.
+            NativeLibraryHeaders(deps, emptySet(), "")
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    fun runDefault(): NativeLibraryHeaders<String> {
+        withIndex(excludeDeclarationsFromPCH = false) { index ->
+            val translationUnit =
+                    this.parse(index, options = CXTranslationUnit_DetailedPreprocessingRecord or CXTranslationUnit_SkipFunctionBodies).ensureNoCompileErrors()
+            try {
+                (
+                    val headers, val _ = ownTranslationUnits
+                ) =
+                    UnitsHolder(index).use { unitsHolder ->
+                        getHeadersAndUnits(this, index, translationUnit, unitsHolder)
+                    }
+
+                fun getPath(file: ClangFile?) = if (file == null) "<builtins>" else file.canonicalPath
+                return NativeLibraryHeaders(
+                        headers.ownHeaders.map(::getPath).toSet(),
+                        headers.importedHeaders.map(::getPath).toSet(),
+                        // Note: the path to the main file makes little sense (because it is a temporary file),
+                        // and ideally shouldn't be included there, within `ownHeaders`/`importedHeaders` as well.
+                        getPath(headers.mainFile)
+                )
+            } finally {
+                clang_disposeTranslationUnit(translationUnit)
+            }
+        }
+    }
+
+    // Intentionally disabled JNI fallback to verify `clang-scan-deps` execution path during Blaze testing.
+    return findScanDeps()?.runScan()?.parseDeps() ?: error("TESTING: clang-scan-deps failed or is missing! Intentionally crashing to prevent silent fallback.")
 }
 
 fun ObjCMethodOrUnavailableMethod.replaces(other: ObjCMethodOrUnavailableMethod): Boolean =
