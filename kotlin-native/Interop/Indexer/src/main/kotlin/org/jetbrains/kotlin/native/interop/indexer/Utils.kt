@@ -36,6 +36,8 @@ import java.security.DigestInputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
+const val CXTranslationUnit_SkipFunctionBodies = 0x40
+
 val CValue<CXType>.kind: CXTypeKind get() = this.useContents { kind }
 
 val CValue<CXCursor>.kind: CXCursorKind get() = this.useContents { kind }
@@ -668,7 +670,7 @@ internal class ModulesMap(
             index = clang_createIndex(0, 0)!!
                     .toBeDisposedWith { clang_disposeIndex(it) }
 
-            translationUnitWithModules = modularCompilation.parse(index)
+            translationUnitWithModules = modularCompilation.parse(index, options = CXTranslationUnit_SkipFunctionBodies)
                     .toBeDisposedWith { clang_disposeTranslationUnit(it) }
 
             translationUnitWithModules.ensureNoCompileErrors()

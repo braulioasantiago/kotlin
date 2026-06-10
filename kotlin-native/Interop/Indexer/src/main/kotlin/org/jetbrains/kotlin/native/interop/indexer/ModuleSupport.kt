@@ -75,7 +75,7 @@ private fun ModularCompilation.parseModules(index: CXIndex, modules: List<String
     val errors = mutableListOf<Diagnostic>()
     val translationUnit = compilationWithImports.parse(
             index,
-            options = CXTranslationUnit_DetailedPreprocessingRecord,
+            options = CXTranslationUnit_DetailedPreprocessingRecord or CXTranslationUnit_SkipFunctionBodies,
             diagnosticHandler = { if (it.isError()) errors.add(it) }
     )
     return TranslationUnitParseResult(translationUnit, errors)
