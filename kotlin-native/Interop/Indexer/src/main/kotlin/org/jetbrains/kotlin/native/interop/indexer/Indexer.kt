@@ -95,6 +95,8 @@ private class ObjCCategoryImpl(
 
 public open class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean = false) : NativeIndex() {
 
+    private var categoriesMap: Map<String, List<CValue<CXCursor>>>? = null
+
     private sealed class DeclarationID {
         data class USR(val usr: String) : DeclarationID()
         data class Spelling(val spelling: String) : DeclarationID()
@@ -476,32 +478,32 @@ public open class NativeIndexImpl(val library: NativeLibrary, val verbose: Boole
      */
     private fun collectClassCategories(classCursor: CValue<CXCursor>, className: String): List<CValue<CXCursor>> {
         assert(classCursor.kind == CXCursorKind.CXCursor_ObjCInterfaceDecl) { classCursor.kind }
-        val classFile = getContainingFile(classCursor)
-        val result = mutableListOf<CValue<CXCursor>>()
-        // Accessing the whole translation unit (TU) is overkill, but it is the simplest solution which is doable
-        // since we use this function for a narrow set of cases.
-        // Possible improvements:
-        // 1. Find/create a function that returns a file scope. `clang_findReferencesInFile` does not seem to work because for categories
-        // it returns `CXCursor_ObjCClassRef` (@interface >CLASS_REFERENCE<(CategoryName)) and there is no easy way to access category from
-        // there.
-        // 2. Extract categories collection into a separate TU pass and create Class -> [Category] mapping. This way we can avoid visiting
-        // TU for every class.
-        val translationUnit = clang_getCursorLexicalParent(classCursor)
-        visitChildren(translationUnit) { childCursor, _ ->
-            if (childCursor.kind == CXCursorKind.CXCursor_ObjCCategoryDecl) {
-                val categoryClassCursor = getObjCCategoryClassCursor(childCursor)
-                val categoryClassName = clang_getCursorDisplayName(categoryClassCursor).convertAndDispose()
-                if (className == categoryClassName) {
-                    val categoryFile = getContainingFile(childCursor)
-                    val isCategoryInTheSameFileAsClass = categoryFile == classFile
-                    val isCategoryFromDefFile = library.allowIncludingObjCCategoriesFromDefFile
-                            && isLocatedInDefFile(childCursor)
-                    if (isCategoryInTheSameFileAsClass || isCategoryFromDefFile) {
-                        result += childCursor
-                    }
+        if (categoriesMap == null) {
+            val translationUnit = clang_getCursorLexicalParent(classCursor)
+            val map = mutableMapOf<String, MutableList<CValue<CXCursor>>>()
+            visitChildren(translationUnit) { childCursor, _ ->
+                if (childCursor.kind == CXCursorKind.CXCursor_ObjCCategoryDecl) {
+                    val categoryClassCursor = getObjCCategoryClassCursor(childCursor)
+                    val categoryClassName = clang_getCursorDisplayName(categoryClassCursor).convertAndDispose()
+                    map.getOrPut(categoryClassName) { mutableListOf() }.add(childCursor)
                 }
+                CXChildVisitResult.CXChildVisit_Continue
             }
-            CXChildVisitResult.CXChildVisit_Continue
+            categoriesMap = map
+        }
+
+        val result = mutableListOf<CValue<CXCursor>>()
+        val candidates = categoriesMap!![className] ?: return emptyList()
+
+        val classFile = getContainingFile(classCursor)
+        for (childCursor in candidates) {
+            val categoryFile = getContainingFile(childCursor)
+            val isCategoryInTheSameFileAsClass = categoryFile == classFile
+            val isCategoryFromDefFile = library.allowIncludingObjCCategoriesFromDefFile
+                    && isLocatedInDefFile(childCursor)
+            if (isCategoryInTheSameFileAsClass || isCategoryFromDefFile) {
+                result += childCursor
+            }
         }
         return result
     }
