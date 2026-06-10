@@ -1055,8 +1055,8 @@ fun ObjCMethodOrUnavailableMethod.replaces(other: ObjCMethodOrUnavailableMethod)
 fun ObjCProperty.replaces(other: ObjCProperty): Boolean =
         this.getter.replaces(other.getter)
 
-fun File.sha256(): String {
-    val digest = MessageDigest.getInstance("SHA-256")
+fun File.md5(): String {
+    val digest = MessageDigest.getInstance("MD5")
     DigestInputStream(this.inputStream(), digest).use { dis ->
         val buffer = ByteArray(8192)
         // Read all bytes:
@@ -1068,7 +1068,7 @@ fun File.sha256(): String {
     }
 }
 
-fun headerContentsHash(filePath: String) = File(filePath).sha256()
+fun headerContentsHash(filePath: String) = File(filePath).md5()
 
 internal fun CValue<CXSourceLocation>.getContainingFile(): ClangFile? = memScoped {
     val fileVar = alloc<CXFileVar>()
