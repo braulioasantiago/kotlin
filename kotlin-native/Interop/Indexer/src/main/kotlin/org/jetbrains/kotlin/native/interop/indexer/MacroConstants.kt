@@ -70,19 +70,28 @@ private fun expandMacros(
         val translationUnit = parseTranslationUnit(index, sourceFile, compilerArgs, options = CXTranslationUnit_DetailedPreprocessingRecord)
         try {
             val nameToMacroDef = mutableMapOf<String, MacroDef>()
-            val unprocessedMacros = names.toMutableList()
+            val queue = ArrayDeque<List<String>>()
+            queue.add(names)
 
-            // Note: will be slow for a library with a lot of macros having unbalanced '{'. TODO: Optimize this case too.
+            while (queue.isNotEmpty()) {
+                val currentBatch = queue.removeFirst()
+                if (currentBatch.isEmpty()) continue
 
-            while (unprocessedMacros.isNotEmpty()) {
-                val processedMacros =
-                        tryExpandMacros(library, translationUnit, sourceFile, unprocessedMacros, typeConverter)
+                val processed = tryExpandMacros(library, translationUnit, sourceFile, currentBatch, typeConverter)
 
-                unprocessedMacros -= (processedMacros.keys + unprocessedMacros.first())
-                // Note: removing first macro should not have any effect, doing this to ensure the loop is finite.
+                processed.forEach { [name, def] ->
+                    if (def != null) nameToMacroDef[name] = def
+                }
 
-                processedMacros.forEach { [name, macroDef] ->
-                    if (macroDef != null) nameToMacroDef[name] = macroDef
+                // The successfully parsed elements form a sequential prefix, so the remaining unparsed ones are simply the tail.
+                val failedOnes = currentBatch.drop(processed.size)
+
+                if (failedOnes.isNotEmpty()) {
+                    if (failedOnes.size > 1) {
+                        val mid = failedOnes.size / 2
+                        queue.add(failedOnes.subList(0, mid))
+                        queue.add(failedOnes.subList(mid, failedOnes.size))
+                    }
                 }
             }
 
@@ -169,9 +178,8 @@ private fun reparseWithCodeSnippets(library: CompilationWithPCH,
                                     translationUnit: CXTranslationUnit, sourceFile: File,
                                     names: List<String>) {
 
-    // TODO: consider using CXUnsavedFile instead of writing the modified file to OS file system.
-    sourceFile.bufferedWriter().use { writer ->
-        writer.appendPreamble(library)
+    val text = buildString {
+        appendPreamble(library)
 
         names.forEach { name ->
             val codeSnippetLines = when (library.language) {
@@ -182,10 +190,19 @@ private fun reparseWithCodeSnippets(library: CompilationWithPCH,
             }
 
             assert(codeSnippetLines.size == CODE_SNIPPET_LINES_NUMBER)
-            codeSnippetLines.forEach { writer.appendLine(it) }
+            codeSnippetLines.forEach { appendLine(it) }
         }
     }
-    clang_reparseTranslationUnit(translationUnit, 0, null, CXTranslationUnit_DetailedPreprocessingRecord)
+
+    memScoped {
+        val unsavedFiles = allocArray<CXUnsavedFile>(1)
+        val unsavedFile = unsavedFiles[0]
+        unsavedFile.Filename = sourceFile.absolutePath.cstr.getPointer(memScope)
+        unsavedFile.Contents = text.cstr.getPointer(memScope)
+        unsavedFile.Length = text.length.toLong()
+
+        clang_reparseTranslationUnit(translationUnit, 1, unsavedFiles, CXTranslationUnit_DetailedPreprocessingRecord)
+    }
 }
 
 /**
@@ -367,8 +384,52 @@ private fun canMacroBeConstant(cursor: CValue<CXCursor>): Boolean {
         return false
     }
 
-    // TODO: check number of tokens and filter out empty definitions;
-    // Requires updating to 3.9.1 due to https://bugs.llvm.org//show_bug.cgi?id=9069
+    val translationUnit = clang_Cursor_getTranslationUnit(cursor) ?: return true
+    
+    return memScoped {
+        val range = clang_getCursorExtent(cursor)
+        val tokensVar = alloc<CPointerVar<CXToken>>()
+        val numTokensVar = alloc<IntVar>()
+        clang_tokenize(translationUnit, range, tokensVar.ptr, numTokensVar.ptr)
+        val numTokens = numTokensVar.value
+        val tokens = tokensVar.value
 
-    return true
+        if (numTokens == 0 || tokens == null) {
+            return@memScoped false // Reject empty macros
+        }
+
+        try {
+            for (i in 0 until numTokens) {
+                val spelling = clang_getTokenSpelling(translationUnit, tokens[i].readValue()).convertAndDispose()
+                
+                // Reject code blocks which cannot be evaluated as standalone primitives.
+                if (spelling == "{" || spelling == "}") {
+                    return@memScoped false
+                }
+
+                // Reject statements with semicolons since they are executable C instructions, not clean r-values.
+                if (spelling == ";") {
+                    return@memScoped false
+                }
+
+                // Reject standard C control flow keywords since they form executable branches.
+                if (spelling in setOf("if", "else", "for", "while", "return", "goto", "switch", "case")) {
+                    return@memScoped false
+                }
+
+                // Reject preprocessor type definitions since structural types are handled elsewhere in the pipeline.
+                if (spelling in setOf("typedef", "struct", "union", "enum")) {
+                    return@memScoped false
+                }
+
+                // Reject compiler-specific attributes, pragmas, and inline assembly since they are internal directives.
+                if (spelling in setOf("__attribute__", "_Pragma", "__asm__", "__asm")) {
+                    return@memScoped false
+                }
+            }
+            true
+        } finally {
+            clang_disposeTokens(translationUnit, tokens, numTokens)
+        }
+    }
 }
